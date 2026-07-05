@@ -11,6 +11,7 @@ export function Reader({ bookId }: { bookId: string }) {
   const [missing, setMissing] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [chunkIndex, setChunkIndex] = useState(0);
+  const [zoomed, setZoomed] = useState(false);
 
   const chunkSize = settings.chunk;
   const chunks = useMemo(
@@ -57,12 +58,16 @@ export function Reader({ bookId }: { bookId: string }) {
 
   const persist = useCallback(
     (i: number) => {
+      // Never save before the text has loaded: wordPosition clamps to 0
+      // while `words` is null, which would clobber the stored position
+      // (StrictMode's double-mount cleanup hits this path in dev).
+      if (!words) return;
       const pos = wordPosition(i);
       if (pos === lastSavedRef.current) return;
       lastSavedRef.current = pos;
       void updatePosition(bookId, pos);
     },
-    [bookId, wordPosition]
+    [bookId, wordPosition, words]
   );
 
   // Playback loop: display the current chunk for its computed duration,
@@ -120,9 +125,14 @@ export function Reader({ bookId }: { bookId: string }) {
     });
   }, [chunks.length, setIndex]);
 
-  // Space toggles on desktop; arrows skip.
+  // Space toggles on desktop; arrows skip. While zoomed out, only Escape
+  // (close overlay) is handled so Space doesn't restart playback.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (zoomed) {
+        if (e.code === 'Escape') setZoomed(false);
+        return;
+      }
       if (e.code === 'Space') {
         e.preventDefault();
         togglePlay();
@@ -132,7 +142,7 @@ export function Reader({ bookId }: { bookId: string }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [togglePlay, chunks.length]);
+  }, [togglePlay, chunks.length, zoomed]);
 
   const skip = (deltaWords: number) => {
     const delta = Math.round(deltaWords / chunkSize) || Math.sign(deltaWords);
@@ -144,6 +154,19 @@ export function Reader({ bookId }: { bookId: string }) {
   const adjustWpm = (delta: number) => {
     update({ wpm: clampWpm(settings.wpm + delta) });
     rampRef.current = 0;
+  };
+
+  const openZoom = () => {
+    setPlaying(false);
+    setZoomed(true);
+  };
+
+  const jumpToWord = (wordIdx: number) => {
+    const ci = Math.max(0, Math.min(chunks.length - 1, Math.floor(wordIdx / chunkSize)));
+    rampRef.current = 0;
+    setIndex(ci);
+    persist(ci);
+    setZoomed(false);
   };
 
   if (missing) {
@@ -187,6 +210,18 @@ export function Reader({ bookId }: { bookId: string }) {
         </button>
         <span className="reader-title">{meta.title}</span>
         <span className="reader-pct">{Math.round(progress * 100)}%</span>
+        <button className="icon-btn" onClick={openZoom} aria-label="Zoom out to text">
+          <svg viewBox="0 0 24 24" width="20" height="20">
+            <circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />
+            <path
+              d="M7.5 10.5h6M15.5 15.5L21 21"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
       </header>
 
       <div
@@ -280,6 +315,100 @@ export function Reader({ bookId }: { bookId: string }) {
             </button>
           </div>
         </div>
+      </div>
+
+      {zoomed && (
+        <ZoomOverlay
+          words={words}
+          current={wordPosition(displayIndex)}
+          chunkSize={chunkSize}
+          onJump={jumpToWord}
+          onClose={() => setZoomed(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** How many words the zoom view shows around the current position, and how
+ * many more each "earlier / later" tap reveals. Windowed so a full novel
+ * never renders 100k spans at once. */
+const ZOOM_WINDOW = 400;
+const ZOOM_EXTEND = 600;
+
+function ZoomOverlay({
+  words,
+  current,
+  chunkSize,
+  onJump,
+  onClose,
+}: {
+  words: string[];
+  current: number;
+  chunkSize: number;
+  onJump: (wordIdx: number) => void;
+  onClose: () => void;
+}) {
+  const [start, setStart] = useState(() => Math.max(0, current - ZOOM_WINDOW));
+  const [end, setEnd] = useState(() => Math.min(words.length, current + ZOOM_WINDOW));
+  const currentRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    currentRef.current?.scrollIntoView({ block: 'center' });
+  }, []);
+
+  // One delegated handler instead of a listener per word span.
+  const onBodyClick = (e: React.MouseEvent) => {
+    const hit = (e.target as HTMLElement).closest('[data-i]');
+    if (hit) onJump(Number(hit.getAttribute('data-i')));
+  };
+
+  return (
+    <div className="zoom-overlay">
+      <header className="zoom-top">
+        <span className="zoom-hint">tap a word to jump there</span>
+        <button className="icon-btn" onClick={onClose} aria-label="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20">
+            <path
+              d="M6 6l12 12M18 6L6 18"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
+      </header>
+      <div className="zoom-body" onClick={onBodyClick}>
+        {start > 0 && (
+          <button className="zoom-more" onClick={() => setStart((s) => Math.max(0, s - ZOOM_EXTEND))}>
+            ⌃ earlier
+          </button>
+        )}
+        <p className="zoom-text">
+          {words.slice(start, end).map((w, k) => {
+            const i = start + k;
+            const isCurrent = i >= current && i < current + chunkSize;
+            return (
+              <span
+                key={i}
+                data-i={i}
+                ref={i === current ? currentRef : undefined}
+                className={isCurrent ? 'zoom-word is-current' : 'zoom-word'}
+              >
+                {w}{' '}
+              </span>
+            );
+          })}
+        </p>
+        {end < words.length && (
+          <button
+            className="zoom-more"
+            onClick={() => setEnd((e2) => Math.min(words.length, e2 + ZOOM_EXTEND))}
+          >
+            later ⌄
+          </button>
+        )}
       </div>
     </div>
   );

@@ -14,6 +14,8 @@ lives in your browser.
 - **Adaptive timing** — sentence-ending punctuation holds ~2.1×, commas ~1.5×, long words get
   a bonus. Resuming starts 20% slower and ramps back to your target WPM over ~10 words.
 - **100–700 WPM**, adjustable mid-read; 1 or 2 words per flash.
+- **Zoom out** — the magnifier in the reader opens the surrounding text with your position
+  highlighted; tap any word to jump there. Handy for skipping credits and front matter.
 - **Import anything** — paste text, or upload `.txt` / `.epub` (EPUB is unzipped and parsed
   entirely client-side, no server involved).
 - **Library with resume** — books live in IndexedDB; your position is saved per book.
@@ -28,6 +30,7 @@ lives in your browser.
 | Play / pause | Tap the word area (or Space on desktop) |
 | Rewind / skip 10 words | `⏮ 10` / `10 ⏭` buttons (or ←/→ keys) |
 | Scrub | Drag the position slider |
+| Zoom out to surrounding text | Magnifier in the top bar (Esc closes) |
 | Change speed mid-read | `−` / `+` stepper (25 WPM steps) |
 
 ## Development
