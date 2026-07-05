@@ -5,6 +5,24 @@ export function tokenize(text: string): string[] {
   return text.split(/\s+/).filter((w) => w.length > 0);
 }
 
+/**
+ * Word index where each paragraph starts. Paragraphs are blank-line
+ * separated blocks (single newlines are treated as soft wraps, so
+ * hard-wrapped plain text doesn't shatter into one-line paragraphs).
+ * Concatenating the paragraphs' tokens reproduces `tokenize(text)`.
+ */
+export function paragraphStarts(text: string): number[] {
+  const starts: number[] = [];
+  let acc = 0;
+  for (const block of text.split(/\n\s*\n/)) {
+    const n = tokenize(block).length;
+    if (n === 0) continue;
+    starts.push(acc);
+    acc += n;
+  }
+  return starts;
+}
+
 /** Group words into chunks of `size`, joined with a space. */
 export function chunkify(words: string[], size: 1 | 2): string[] {
   if (size === 1) return words;
@@ -57,6 +75,22 @@ export function chunkDelay(chunk: string, wpm: number): number {
   if (coreLen >= 12) factor += 0.4;
   else if (coreLen >= 8) factor += 0.2;
   return base * wordCount * factor;
+}
+
+/** How far the resume rewind may reach, in words. */
+export const RESUME_MAX_BACK = 15;
+
+/**
+ * Word index of the start of the sentence containing word `i`, looking
+ * back at most `maxBack` words. Resuming there means re-entering with
+ * context instead of mid-sentence.
+ */
+export function sentenceStart(words: string[], i: number, maxBack = RESUME_MAX_BACK): number {
+  const floor = Math.max(0, i - maxBack);
+  for (let j = i - 1; j >= floor; j--) {
+    if (SENTENCE_END.test(words[j])) return j + 1;
+  }
+  return floor;
 }
 
 /** Number of chunks the resume ramp spans. */

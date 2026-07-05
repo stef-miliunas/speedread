@@ -627,7 +627,13 @@ button {
 .transport-main {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 14px;
+}
+
+/* Paragraph skip: a quieter, secondary action flanking the word-skip
+   buttons — for hopping over front matter/credits in one tap. */
+.para-btn {
+  opacity: 0.7;
 }
 
 .play-btn {

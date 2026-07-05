@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getBook, getText, updatePosition, type BookMeta } from '../lib/db';
-import { chunkDelay, chunkify, orpIndex, rampSpeed, tokenize } from '../lib/rsvp';
+import {
+  chunkDelay,
+  chunkify,
+  orpIndex,
+  paragraphStarts,
+  rampSpeed,
+  sentenceStart,
+  tokenize,
+} from '../lib/rsvp';
 import { clampWpm, useSettings, WPM_MAX, WPM_MIN, WPM_STEP } from '../lib/settings';
 import { goBack } from '../lib/router';
 
@@ -8,6 +16,7 @@ export function Reader({ bookId }: { bookId: string }) {
   const { settings, update } = useSettings();
   const [meta, setMeta] = useState<BookMeta | null>(null);
   const [words, setWords] = useState<string[] | null>(null);
+  const [paraStarts, setParaStarts] = useState<number[]>([]);
   const [missing, setMissing] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [chunkIndex, setChunkIndex] = useState(0);
@@ -41,6 +50,7 @@ export function Reader({ bookId }: { bookId: string }) {
       const w = tokenize(text);
       setMeta(m);
       setWords(w);
+      setParaStarts(paragraphStarts(text));
       const start = Math.min(Math.floor(m.position / settings.chunk), Math.ceil(w.length / settings.chunk));
       indexRef.current = start;
       setChunkIndex(start);
@@ -105,12 +115,19 @@ export function Reader({ bookId }: { bookId: string }) {
     if (!playing && words) persist(indexRef.current);
   }, [playing, words, persist]);
   useEffect(() => {
-    const onHide = () => persist(indexRef.current);
-    document.addEventListener('visibilitychange', onHide);
-    window.addEventListener('pagehide', onHide);
+    // Backgrounded tabs throttle setTimeout to roughly once a second, so a
+    // playing reader left in the background would "catch up" with a burst
+    // of words on return. Pausing on hide keeps the position honest.
+    const onVisibility = () => {
+      persist(indexRef.current);
+      if (document.hidden) setPlaying(false);
+    };
+    const onPageHide = () => persist(indexRef.current);
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
     return () => {
-      document.removeEventListener('visibilitychange', onHide);
-      window.removeEventListener('pagehide', onHide);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
       persist(indexRef.current);
     };
   }, [persist]);
@@ -120,10 +137,16 @@ export function Reader({ bookId }: { bookId: string }) {
       if (!was) {
         rampRef.current = 0;
         if (indexRef.current >= chunks.length) setIndex(0);
+        else if (indexRef.current > 0 && words) {
+          // Re-enter at the start of the current sentence so a pause
+          // doesn't drop you back in mid-thought.
+          const wi = sentenceStart(words, Math.min(indexRef.current * chunkSize, words.length - 1));
+          setIndex(Math.floor(wi / chunkSize));
+        }
       }
       return !was;
     });
-  }, [chunks.length, setIndex]);
+  }, [chunks.length, setIndex, words, chunkSize]);
 
   // Space toggles on desktop; arrows skip. While zoomed out, only Escape
   // (close overlay) is handled so Space doesn't restart playback.
@@ -138,15 +161,41 @@ export function Reader({ bookId }: { bookId: string }) {
         togglePlay();
       } else if (e.code === 'ArrowLeft') skip(-10);
       else if (e.code === 'ArrowRight') skip(10);
+      else if (e.code === 'ArrowUp') {
+        e.preventDefault();
+        adjustWpm(WPM_STEP);
+      } else if (e.code === 'ArrowDown') {
+        e.preventDefault();
+        adjustWpm(-WPM_STEP);
+      } else if (e.code === 'BracketLeft') skipParagraph(-1);
+      else if (e.code === 'BracketRight') skipParagraph(1);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [togglePlay, chunks.length, zoomed]);
+  }, [togglePlay, chunks.length, zoomed, settings.wpm, paraStarts]);
 
   const skip = (deltaWords: number) => {
     const delta = Math.round(deltaWords / chunkSize) || Math.sign(deltaWords);
     const next = Math.max(0, Math.min(chunks.length - 1, indexRef.current + delta));
+    rampRef.current = 0;
+    setIndex(next);
+  };
+
+  // Jump to the next/previous paragraph boundary — a quick way to hop
+  // over front matter, credits, or a stray section without opening the
+  // full zoom-out view.
+  const skipParagraph = (direction: 1 | -1) => {
+    if (paraStarts.length === 0 || !words) return;
+    const curWord = indexRef.current * chunkSize;
+    let targetWord: number;
+    if (direction > 0) {
+      targetWord = paraStarts.find((p) => p > curWord) ?? words.length;
+    } else {
+      const before = paraStarts.filter((p) => p < curWord - 1);
+      targetWord = before.length ? before[before.length - 1] : 0;
+    }
+    const next = Math.max(0, Math.min(chunks.length - 1, Math.round(targetWord / chunkSize)));
     rampRef.current = 0;
     setIndex(next);
   };
@@ -295,6 +344,13 @@ export function Reader({ bookId }: { bookId: string }) {
 
         <div className="transport">
           <div className="transport-main">
+            <button
+              className="icon-btn para-btn"
+              onClick={() => skipParagraph(-1)}
+              aria-label="Previous paragraph"
+            >
+              <ParaSkipIcon back />
+            </button>
             <button className="icon-btn skip-btn" onClick={() => skip(-10)} aria-label="Back 10 words">
               <SkipIcon back />
             </button>
@@ -312,6 +368,13 @@ export function Reader({ bookId }: { bookId: string }) {
             </button>
             <button className="icon-btn skip-btn" onClick={() => skip(10)} aria-label="Forward 10 words">
               <SkipIcon />
+            </button>
+            <button
+              className="icon-btn para-btn"
+              onClick={() => skipParagraph(1)}
+              aria-label="Next paragraph"
+            >
+              <ParaSkipIcon />
             </button>
           </div>
         </div>
@@ -411,6 +474,27 @@ function ZoomOverlay({
         )}
       </div>
     </div>
+  );
+}
+
+function ParaSkipIcon({ back = false }: { back?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      style={back ? undefined : { transform: 'scaleX(-1)' }}
+    >
+      <path
+        d="M13 5l-6 7 6 7M19 5l-6 7 6 7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M4 4v16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
   );
 }
 
